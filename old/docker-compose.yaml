@@ -1,0 +1,18 @@
+services:
+  ai-proxy:
+    image: node:20-alpine
+    container_name: ai-proxy
+    restart: unless-stopped
+    working_dir: /app
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./index.js:/app/index.js:ro
+      - ./whitelist.json:/app/whitelist.json:ro
+    command: sh -c "node index.js"
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    driver: bridge
