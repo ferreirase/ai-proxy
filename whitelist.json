@@ -1,0 +1,7 @@
+{
+  "allowedTools": ["Read", "Edit", "Bash", "Glob", "Grep"],
+  "mcpServers": ["filesystem", "github", "database"],
+  "compactSystemPrompt": true,
+  "blockTitleGeneration": true,
+  "blockWarmup": true
+}

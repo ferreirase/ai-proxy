@@ -1,0 +1,29 @@
+<prompt>
+  <metadata>
+    <id>task-1</id>
+    <title>Initialize Node.js Project with npm</title>
+    <status>To Do</status>
+    <labels>
+      <label>phase-1</label>
+      <label>config</label>
+      <label>setup</label>
+    </labels>
+    <created_at>2025-10-24 15:58</created_at>
+    <extras>
+      <field name="priority">high</field>
+    </extras>
+  </metadata>
+  <goal>Initialize Node.js Project with npm. This is the foundational task to establish the project&apos;s base.</goal>
+  <context>
+    <description>This is the foundational task to establish the project&apos;s base. It involves creating the `package.json` file, which will serve as the project&apos;s manifest, managing its dependencies, scripts, and metadata.</description>
+  </context>
+  <constraints>
+    <constraint>Status: To Do</constraint>
+    <constraint>Labels: phase-1, config, setup</constraint>
+  </constraints>
+  <acceptance_criteria>
+    <criterion index="#1" status="pending">The `npm init -y` command is executed in the project root.</criterion>
+    <criterion index="#2" status="pending">A `package.json` file is successfully created in the root directory.</criterion>
+    <criterion index="#3" status="pending">The `package.json` file contains the default sections (name, version, description, main, scripts, keywords, author, license).</criterion>
+  </acceptance_criteria>
+</prompt>

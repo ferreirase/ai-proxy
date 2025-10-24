@@ -1,0 +1,29 @@
+<prompt>
+  <metadata>
+    <id>task-2</id>
+    <title>Install Initial Project Dependencies</title>
+    <status>To Do</status>
+    <labels>
+      <label>phase-1</label>
+      <label>config</label>
+      <label>dependencies</label>
+    </labels>
+    <created_at>2025-10-24 16:02</created_at>
+    <extras>
+      <field name="priority">high</field>
+    </extras>
+  </metadata>
+  <goal>Install Initial Project Dependencies. This task involves installing all the necessary packages for the project.</goal>
+  <context>
+    <description>This task involves installing all the necessary packages for the project. This includes production dependencies required for the application to run and development dependencies needed for building, testing, and running the project in a development environment.</description>
+  </context>
+  <constraints>
+    <constraint>Status: To Do</constraint>
+    <constraint>Labels: phase-1, config, dependencies</constraint>
+  </constraints>
+  <acceptance_criteria>
+    <criterion index="#1" status="pending">The `npm install` command is run successfully.</criterion>
+    <criterion index="#2" status="pending">`express`, `sqlite3`, and `dotenv` are added to the `dependencies` section of `package.json`.</criterion>
+    <criterion index="#3" status="pending">`typescript`, `ts-node`, `nodemon`, `@types/node`, and `@types/express` are added to the `devDependencies` section of `package.json`.</criterion>
+  </acceptance_criteria>
+</prompt>

@@ -1,0 +1,31 @@
+<prompt>
+  <metadata>
+    <id>task-7</id>
+    <title>Implement Basic Express Server (Health Check)</title>
+    <status>To Do</status>
+    <labels>
+      <label>phase-1</label>
+      <label>config</label>
+      <label>server</label>
+    </labels>
+    <created_at>2025-10-24 16:11</created_at>
+    <extras>
+      <field name="priority">high</field>
+    </extras>
+  </metadata>
+  <goal>Implement Basic Express Server (Health Check). This task involves creating a minimal Express.js server to validate the project setup and ensure compilation and startup workflows succeed.</goal>
+  <context>
+    <description>This task involves creating a minimal Express.js server to validate the project setup. It will include a basic application file, an entry point, and a simple health check endpoint to confirm that the TypeScript compilation and server startup processes are working as expected.</description>
+  </context>
+  <constraints>
+    <constraint>Status: To Do</constraint>
+    <constraint>Labels: phase-1, config, server</constraint>
+  </constraints>
+  <acceptance_criteria>
+    <criterion index="#1" status="pending">A basic Express application is initialized in `src/app.ts`.</criterion>
+    <criterion index="#2" status="pending">An `index.ts` file is created in `src/` that imports and starts the Express app from `app.ts`.</criterion>
+    <criterion index="#3" status="pending">The server listens on a configurable port (e.g., from `.env` or default 3001).</criterion>
+    <criterion index="#4" status="pending">A simple GET endpoint (`/health`) is implemented that returns a 200 status and a JSON response like `{ status: 'ok' }`.</criterion>
+    <criterion index="#5" status="pending">The application successfully compiles (`npm run build`) and starts (`npm start`).</criterion>
+  </acceptance_criteria>
+</prompt>

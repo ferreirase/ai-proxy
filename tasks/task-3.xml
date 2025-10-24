@@ -1,0 +1,29 @@
+<prompt>
+  <metadata>
+    <id>task-3</id>
+    <title>Set Up TypeScript Configuration (tsconfig.json)</title>
+    <status>To Do</status>
+    <labels>
+      <label>phase-1</label>
+      <label>config</label>
+      <label>typescript</label>
+    </labels>
+    <created_at>2025-10-24 16:04</created_at>
+    <extras>
+      <field name="priority">high</field>
+    </extras>
+  </metadata>
+  <goal>Set Up TypeScript Configuration (tsconfig.json). This task focuses on setting up the TypeScript compiler configuration.</goal>
+  <context>
+    <description>This task focuses on setting up the TypeScript compiler configuration. A `tsconfig.json` file will be created and configured to define how the TypeScript code should be compiled into JavaScript, ensuring code quality and maintainability.</description>
+  </context>
+  <constraints>
+    <constraint>Status: To Do</constraint>
+    <constraint>Labels: phase-1, config, typescript</constraint>
+  </constraints>
+  <acceptance_criteria>
+    <criterion index="#1" status="pending">A `tsconfig.json` file is created in the project root.</criterion>
+    <criterion index="#2" status="pending">The configuration includes essential compiler options like `target`, `module`, `rootDir`, `outDir`, `esModuleInterop`, and `strict`.</criterion>
+    <criterion index="#3" status="pending">The configuration correctly points `rootDir` to `./src` and `outDir` to `./dist`.</criterion>
+  </acceptance_criteria>
+</prompt>

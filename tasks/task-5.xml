@@ -1,0 +1,30 @@
+<prompt>
+  <metadata>
+    <id>task-5</id>
+    <title>Set Up Code Quality Tools (ESLint &amp; Prettier)</title>
+    <status>To Do</status>
+    <labels>
+      <label>phase-1</label>
+      <label>config</label>
+      <label>quality</label>
+    </labels>
+    <created_at>2025-10-24 16:07</created_at>
+    <extras>
+      <field name="priority">medium</field>
+    </extras>
+  </metadata>
+  <goal>Set Up Code Quality Tools (ESLint &amp; Prettier). To ensure code consistency and maintain high code quality from the start, this task involves setting up ESLint for static analysis and Prettier for automated code formatting.</goal>
+  <context>
+    <description>To ensure code consistency and maintain high code quality from the start, this task involves setting up ESLint for static analysis and Prettier for automated code formatting. This helps in catching errors early and maintaining a uniform codebase.</description>
+  </context>
+  <constraints>
+    <constraint>Status: To Do</constraint>
+    <constraint>Labels: phase-1, config, quality</constraint>
+  </constraints>
+  <acceptance_criteria>
+    <criterion index="#1" status="pending">ESLint and Prettier are added as dev dependencies.</criterion>
+    <criterion index="#2" status="pending">Configuration files (`.eslintrc.js`, `.prettierrc`) are created in the project root.</criterion>
+    <criterion index="#3" status="pending">An npm script `lint` is added to `package.json` to run ESLint.</criterion>
+    <criterion index="#4" status="pending">An npm script `format` is added to `package.json` to run Prettier.</criterion>
+  </acceptance_criteria>
+</prompt>
