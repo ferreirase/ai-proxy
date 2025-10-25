@@ -7,3 +7,5 @@ backlog
 .claude
 .factory
 dist
+.env
+package-lock.json

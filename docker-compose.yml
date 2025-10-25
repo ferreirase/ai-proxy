@@ -1,0 +1,19 @@
+services:
+  ai-proxy:
+    build: .
+    container_name: ai-proxy
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - PORT=3003
+      - BODY_LIMIT=2mb
+      - UPSTREAM_TIMEOUT_MS=60000
+      - CLIENT_TIMEOUT_MS=15000
+      - STATS_DB_PATH=/app/data/stats.db
+      - WARN_TOKENS_MANAGER=2000
+      - WARN_TOKENS_CODER=6000
+      - WARN_TOKENS_TESTER=4000
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

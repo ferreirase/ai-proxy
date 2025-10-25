@@ -1,5 +1,54 @@
 # Claude Code Token Optimization Proxy
 
+> Update (current state): Minimal, stable Express proxy with healthcheck and stats
+
+We simplified the runtime to a robust, minimal Express proxy that forwards requests to OpenRouter without mutating payloads, while adding just the essentials for production readiness:
+
+- server: `server.js` (Express)
+- endpoints:
+  - `POST /`, `POST /v1/chat/completions`, `POST /api/v1/chat/completions` → proxied to OpenRouter
+  - `GET /health` → status, uptime, port
+  - `GET /stats[?periodMinutes=N][&agent=manager|coder|tester]` → usage summary per agent (manager/coder/tester)
+  - `GET /stats/export[?periodMinutes=N][&agent=manager|coder|tester]` → export CSV of raw per-request stats
+- `GET /openapi.json` → OpenAPI spec (JSON)
+- `GET /docs` → Swagger UI (requires swagger-ui-express)
+
+OpenAPI source file
+
+- The OpenAPI spec is stored in `openapi.yaml`. Edit this file to update the API docs. The server loads it at startup and serves it under `/openapi.json` and `/docs` (Swagger UI).
+- telemetry:
+  - X-Request-Id generated on every request and propagated to upstream
+  - concise request logs and per-request stats: bytes in/out, estimated tokens, upstream status, duration
+  - persistent stats in SQLite (`stats.db`), configurable via `STATS_DB_PATH`
+- safety:
+  - request body limit (default `2mb`), upstream timeout (default `60s`), client idle timeout (default `15s`)
+  - fails fast if `OPENROUTER_API_KEY` is missing
+
+Quick start
+
+1) Install deps (already added):
+   - `npm install`
+2) Env vars (via shell or `.env`):
+   - `OPENROUTER_API_KEY=...` (required)
+   - optional: `PORT=3003`, `BODY_LIMIT=2mb`, `UPSTREAM_TIMEOUT_MS=60000`, `CLIENT_TIMEOUT_MS=15000`, `STATS_DB_PATH=stats.db`
+3) Run:
+   - `npm start`
+4) Point your client to one of:
+   - `POST http://localhost:3003/?agent=coder` (supported: `agent=manager|coder|tester`)
+   - `POST http://localhost:3003/v1/chat/completions?agent=manager`
+   - `POST http://localhost:3003/api/v1/chat/completions?agent=tester`
+5) Inspect:
+   - `GET http://localhost:3003/health`
+   - `GET http://localhost:3003/stats` or `/stats?periodMinutes=60` or `/stats?agent=coder`
+   - `GET http://localhost:3003/stats/export` or `/stats/export?periodMinutes=60&agent=tester`
+   - `GET http://localhost:3003/docs` (Swagger UI) or `/openapi.json`
+
+Notes
+
+- This minimal proxy does not alter payloads. It focuses on stability and observability.
+- Request IDs and stats logs include emojis to improve scanning (e.g., 📝 request log, 📊 per-request stats).
+- The previous experimental optimization logic remains documented below, but is not active in `server.js` to keep complexity low.
+
 **A 96% token reduction solution for Claude Code Router and similar AI coding agents**
 
 ---

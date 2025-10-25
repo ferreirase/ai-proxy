@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: AI Proxy (OpenRouter) – Minimal Express
+  version: 1.0.0
+  description: Stable proxy with healthcheck, request IDs and usage stats.
+servers:
+  - url: http://localhost:3003
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /:
+    post:
+      summary: Proxy to OpenRouter (root path)
+      parameters:
+        - in: query
+          name: agent
+          required: false
+          schema:
+            type: string
+            enum: [manager, coder, tester]
+          description: Agent label for stats aggregation only
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Upstream response
+  /v1/chat/completions:
+    post:
+      summary: Proxy to OpenRouter (compat path)
+      parameters:
+        - in: query
+          name: agent
+          required: false
+          schema:
+            type: string
+            enum: [manager, coder, tester]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Upstream response
+  /api/v1/chat/completions:
+    post:
+      summary: Proxy to OpenRouter (API path)
+      parameters:
+        - in: query
+          name: agent
+          required: false
+          schema:
+            type: string
+            enum: [manager, coder, tester]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Upstream response
+  /stats:
+    get:
+      summary: Usage summary per agent
+      parameters:
+        - in: query
+          name: periodMinutes
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: agent
+          required: false
+          schema:
+            type: string
+            enum: [manager, coder, tester]
+      responses:
+        '200':
+          description: Summary JSON
+  /stats/export:
+    get:
+      summary: Export raw stats as CSV
+      parameters:
+        - in: query
+          name: periodMinutes
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: agent
+          required: false
+          schema:
+            type: string
+            enum: [manager, coder, tester]
+      responses:
+        '200':
+          description: CSV content
+
