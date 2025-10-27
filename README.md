@@ -33,6 +33,7 @@ Quick start
    - optional: `PORT=3003`, `BODY_LIMIT=2mb`, `UPSTREAM_TIMEOUT_MS=60000`, `CLIENT_TIMEOUT_MS=15000`, `STATS_DB_PATH=stats.db`
 3) Run:
    - `npm start`
+   - Dev logs (pretty): `npm run dev`
 4) Point your client to one of:
    - `POST http://localhost:3003/?agent=coder` (supported: `agent=manager|coder|tester`)
    - `POST http://localhost:3003/v1/chat/completions?agent=manager`

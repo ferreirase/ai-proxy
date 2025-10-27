@@ -7,6 +7,9 @@ const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
 const { PassThrough } = require('stream');
+const pino = require('pino');
+const pinoHttp = require('pino-http');
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 let Database;
 try { Database = require('better-sqlite3'); } catch (_) { Database = null; }
 let swaggerUi, yaml;
@@ -23,7 +26,7 @@ const CLIENT_TIMEOUT_MS = process.env.CLIENT_TIMEOUT_MS ? Number(process.env.CLI
 const STATS_DB_PATH = process.env.STATS_DB_PATH || 'stats.db';
 
 if (!OPENROUTER_API_KEY) {
-  console.error('🚫 [startup] Missing OPENROUTER_API_KEY in environment.');
+  logger.error('🚫 [startup] Missing OPENROUTER_API_KEY in environment.');
   process.exit(1);
 }
 
@@ -79,12 +82,12 @@ if (Database) {
     selectRowsSince = db.prepare(`SELECT id, ts, agent, in_bytes, est_tokens, out_bytes, upstream_status, duration_ms FROM stats WHERE ts >= ? ORDER BY id ASC`);
     selectRowsByAgentAll = db.prepare(`SELECT id, ts, agent, in_bytes, est_tokens, out_bytes, upstream_status, duration_ms FROM stats WHERE agent = ? ORDER BY id ASC`);
     selectRowsByAgentSince = db.prepare(`SELECT id, ts, agent, in_bytes, est_tokens, out_bytes, upstream_status, duration_ms FROM stats WHERE ts >= ? AND agent = ? ORDER BY id ASC`);
-    console.log(`🗃️  [stats] DB ready at ${STATS_DB_PATH}`);
+    logger.info(`🗃️  [stats] DB ready at ${STATS_DB_PATH}`);
   } catch (e) {
-    console.error('⚠️  [stats] DB init failed:', e && e.message ? e.message : e);
+    logger.error({ err: e }, '⚠️  [stats] DB init failed');
   }
 } else {
-  console.log('ℹ️  [stats] better-sqlite3 not installed; stats persistence disabled');
+  logger.info('ℹ️  [stats] better-sqlite3 not installed; stats persistence disabled');
 }
 
 // Capture raw body so we can forward exactly as received
@@ -95,16 +98,32 @@ app.use(express.json({
   },
 }));
 
-// Attach X-Request-Id (always generated here) and minimal request logger
+// pino-http integration for Express
+app.use(
+  pinoHttp({
+    logger,
+    genReqId: (req) => (crypto.randomUUID ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2,8)}`),
+    customLogLevel: function (req, res, err) {
+      if (res.statusCode >= 500 || err) return 'error';
+      if (res.statusCode >= 400) return 'warn';
+      return 'info';
+    },
+    customSuccessMessage: function (req, res) {
+      return `📝 [${req.id}] ${req.method} ${req.originalUrl || req.url} -> ${res.statusCode}`;
+    },
+    customErrorMessage: function (req, res, err) {
+      return `🛑 [${req.id}] ${req.method} ${req.originalUrl || req.url} -> ${res.statusCode} ${err ? err.message : ''}`;
+    },
+    // avoid noisy auto logs for health if desired
+    autoLogging: {
+      ignore: (req) => req.url.startsWith('/health'),
+    },
+  })
+);
+
+// Echo X-Request-Id header
 app.use((req, res, next) => {
-  const reqId = (crypto.randomUUID ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
-  req.requestId = reqId;
-  res.setHeader('X-Request-Id', reqId);
-  const start = Date.now();
-  res.on('finish', () => {
-    const ms = Date.now() - start;
-    console.log(`📝 [${reqId}] ${req.method} ${req.originalUrl || req.url} -> ${res.statusCode} ${ms}ms`);
-  });
+  if (req.id) res.setHeader('X-Request-Id', req.id);
   next();
 });
 
@@ -122,7 +141,7 @@ try {
     openapiSpec = yaml.load(raw);
   }
 } catch (e) {
-  console.error('⚠️  Failed to load openapi.yaml:', e && e.message ? e.message : e);
+  logger.error({ err: e }, '⚠️  Failed to load openapi.yaml');
 }
 
 app.get('/openapi.json', (_req, res) => {
@@ -131,9 +150,9 @@ app.get('/openapi.json', (_req, res) => {
 });
 if (swaggerUi && openapiSpec) {
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec));
-  console.log('📚 Swagger UI available at /docs');
+  logger.info('📚 Swagger UI available at /docs');
 } else if (!swaggerUi) {
-  console.log('ℹ️  Swagger UI not installed. Install with: npm i swagger-ui-express');
+  logger.info('ℹ️  Swagger UI not installed. Install with: npm i swagger-ui-express');
 }
 
 // Core proxy route (no payload mutation)
@@ -167,7 +186,7 @@ function proxyHandler(req, res) {
       'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
       'HTTP-Referer': req.headers['http-referer'] || req.headers['referer'] || '',
       'X-Title': req.headers['x-title'] || 'Express Proxy',
-      'X-Request-Id': req.requestId,
+      'X-Request-Id': req.id,
     },
   };
 
@@ -180,7 +199,7 @@ function proxyHandler(req, res) {
     const thresholds = { manager: warnManager, coder: warnCoder, tester: warnTester };
     const thresh = thresholds[agent] || warnManager;
     if (estTokens > thresh) {
-      console.warn(`⚠️  [${req.requestId}] high input for agent=${agent}: ~${estTokens} tokens (>${thresh})`);
+      req.log.warn(`⚠️  [${req.id}] high input for agent=${agent}: ~${estTokens} tokens (>${thresh})`);
     }
   } catch (_) {}
 
@@ -191,12 +210,12 @@ function proxyHandler(req, res) {
     tee.on('data', (chunk) => { outBytes += chunk.length; });
     tee.on('end', () => {
       const ms = Date.now() - startUpstream;
-      console.log(`📊 [${req.requestId}] agent=${agent} in=${inBytes}B (~${estTokens} tok) out=${outBytes}B upstream=${upstreamRes.statusCode} ${ms}ms`);
+      req.log.info(`📊 [${req.id}] agent=${agent} in=${inBytes}B (~${estTokens} tok) out=${outBytes}B upstream=${upstreamRes.statusCode} ${ms}ms`);
       if (insertStat) {
         try {
           insertStat.run({ ts: Date.now(), agent, in_bytes: inBytes, est_tokens: estTokens, out_bytes: outBytes, upstream_status: upstreamRes.statusCode || 0, duration_ms: ms });
         } catch (e) {
-          console.error('⚠️  [stats] insert failed:', e && e.message ? e.message : e);
+          req.log.error({ err: e }, '⚠️  [stats] insert failed');
         }
       }
     });
@@ -208,7 +227,7 @@ function proxyHandler(req, res) {
   });
 
   upstreamReq.on('error', (err) => {
-    console.error('🛑 [upstream]', err && err.message ? err.message : err);
+    logger.error({ err }, '🛑 [upstream]');
     if (!res.headersSent) res.status(502);
     res.type('application/json').end(JSON.stringify({ error: 'Bad Gateway', detail: String(err && err.message ? err.message : err) }));
   });
@@ -230,7 +249,7 @@ app.use((req, res) => {
 // Central error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
-  console.error('[error]', err && err.message ? err.message : err);
+  logger.error({ err }, '[error]');
   if (!res.headersSent) res.status(500);
   res.json({ error: 'Internal Server Error' });
 });
@@ -250,7 +269,7 @@ app.get('/stats', (req, res) => {
     }
     res.json({ periodMinutes: mins || null, agent: agent || null, summary: rows });
   } catch (e) {
-    console.error('⚠️  [stats] query failed:', e && e.message ? e.message : e);
+    logger.error({ err: e }, '⚠️  [stats] query failed');
     res.status(500).json({ error: 'stats query failed' });
   }
 });
@@ -280,17 +299,17 @@ app.get('/stats/export', (req, res) => {
     }
     res.end();
   } catch (e) {
-    console.error('⚠️  [stats] export failed:', e && e.message ? e.message : e);
+    logger.error({ err: e }, '⚠️  [stats] export failed');
     res.status(500).json({ error: 'stats export failed' });
   }
 });
 
 // Start
 app.listen(PORT, () => {
-  console.log('');
-  console.log('🚀 ╔══════════════════════════════════════════╗');
-  console.log('🚀 ║   Minimal Express Proxy (OpenRouter)     ║');
-  console.log('🚀 ╚══════════════════════════════════════════╝');
-  console.log(`🔌 Listening on http://localhost:${PORT}`);
-  console.log(`🧩 Body limit: ${BODY_LIMIT} | ⏱️  Upstream timeout: ${UPSTREAM_TIMEOUT_MS}ms | 💤 Client idle: ${CLIENT_TIMEOUT_MS}ms`);
+  logger.info('');
+  logger.info('🚀 ╔══════════════════════════════════════════╗');
+  logger.info('🚀 ║   Minimal Express Proxy (OpenRouter)     ║');
+  logger.info('🚀 ╚══════════════════════════════════════════╝');
+  logger.info(`🔌 Listening on http://localhost:${PORT}`);
+  logger.info(`🧩 Body limit: ${BODY_LIMIT} | ⏱️  Upstream timeout: ${UPSTREAM_TIMEOUT_MS}ms | 💤 Client idle: ${CLIENT_TIMEOUT_MS}ms`);
 });
