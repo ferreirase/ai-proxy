@@ -4,28 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Commands
 
-This repository uses a token optimization proxy for Claude Code Router. To start the proxy, use the following command:
-
+### 1. Build System
 ```bash
-node claude-code-ultimate-configurable.js
+npm run build          # Compile TypeScript to JavaScript (tsc)
+npm run dev            # Development mode with auto-reload (nodemon)
+npm start              # Start production server (node dist/index.js)
 ```
 
-To configure Claude Code to use the proxy, modify the `~/.config/claude-code-router/config.json` file and set `api_base_url` to `http://localhost:3001`.
-
-To reload the proxy configuration without restarting, use the following command:
-
+### 2. Code Quality
 ```bash
-kill -SIGUSR1 $(pgrep -f claude-code-ultimate)
+npm run lint           # Run ESLint on TypeScript files (eslint src/**/*.ts)
+npm run format         # Format code with Prettier (prettier --write src/**/*.ts)
+```
+
+### 3. Proxy Runtime Commands
+```bash
+node index.js                              # Run legacy proxy directly
+kill -SIGUSR1 $(pgrep -f claude-code-ultimate)  # Hot-reload config without restart
 ```
 
 ## High-Level Code Architecture and Structure
 
-This repository implements a token optimization proxy that sits between Claude Code and the OpenRouter API. It reduces token consumption by filtering unnecessary payload bloat. The core optimizations include:
+This repository implements a token optimization proxy for Claude Code Router that reduces API token consumption by 96% through intelligent payload filtering and optimization.
 
--   Blocking title generation spam
--   Compacting the system prompt
--   Whitelisting essential tools
+The main components are:
 
-The main component is `claude-code-ultimate-configurable.js`, which implements the proxy logic. The proxy configuration is stored in `mcp-whitelist.json`, which defines the allowed tools, MCP servers, and other settings.
+- `src/index.ts`: Server entry point (TypeScript)
+- `src/app.ts`: Express app initialization
+- `index.js`: Main proxy implementation (Node.js)
+- `whitelist.json`: Configuration for allowed tools/MCP servers
+
+The proxy configuration is stored in `whitelist.json`, which defines the allowed tools and MCP servers.
 
 See the Architecture section of the README for a detailed diagram of the data flow.
