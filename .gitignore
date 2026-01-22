@@ -9,3 +9,4 @@ backlog
 dist
 package-lock.json
 .env
+.qwen
