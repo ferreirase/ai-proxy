@@ -7,18 +7,13 @@ COPY package.json package-lock.json* ./
 RUN npm install --only=production --no-audit --no-fund
 
 # Copy source files
-COPY server.js openapi.yaml ./
+COPY server.js config.js system-prompt.js openapi.yaml ./
 
 # Default environment
-ENV PORT=3003 \
-    BODY_LIMIT=2mb \
+ARG PORT=3003
+ENV PORT=${PORT} \
     UPSTREAM_TIMEOUT_MS=60000 \
-    CLIENT_TIMEOUT_MS=15000 \
-    STATS_DB_PATH=/app/data/stats.db
-
-# Create data dir for sqlite
-RUN mkdir -p /app/data
-VOLUME ["/app/data"]
+    LOG_LEVEL=info
 
 EXPOSE 3003
 
