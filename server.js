@@ -1,329 +1,343 @@
 require('dotenv').config();
-const express = require('express');
+const fastify = require('fastify');
 const https = require('https');
-const crypto = require('crypto');
-const { PassThrough } = require('stream');
-const pino = require('pino');
-const pinoHttp = require('pino-http');
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
-let swaggerUi, yaml;
-try { swaggerUi = require('swagger-ui-express'); } catch (_) { swaggerUi = null; }
-try { yaml = require('js-yaml'); } catch (_) { yaml = null; }
-const fs = require('fs');
-const path = require('path');
 
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3003;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const BODY_LIMIT = process.env.BODY_LIMIT || '2mb';
-const UPSTREAM_TIMEOUT_MS = process.env.UPSTREAM_TIMEOUT_MS ? Number(process.env.UPSTREAM_TIMEOUT_MS) : 60000; // 60s
-const CLIENT_TIMEOUT_MS = process.env.CLIENT_TIMEOUT_MS ? Number(process.env.CLIENT_TIMEOUT_MS) : 15000; // 15s idle
-const LOG_DIR = process.env.LOG_DIR || 'logs';
-const LOG_FILE = path.join(LOG_DIR, 'requests.log');
-const PROMPT_LOG = path.join(LOG_DIR, 'system_prompts.txt');
-let firstSystemPromptLogged = false;
+const config = require('./config');
+const CUSTOM_SYSTEM_PROMPT = require('./system-prompt');
 
-// Hardcoded system prompt
-const CUSTOM_SYSTEM_PROMPT = `You are Claude Code, Anthropic's CLI for software engineering.
+const app = fastify({
+  logger: { level: config.logLevel }
+});
 
-CRITICAL SECURITY:
-- Assist: Authorized security testing, CTF, defensive security, education
-- Refuse: Destructive attacks, DoS, mass targeting, supply chain compromise
-- Never generate/guess URLs unless confident they help with programming
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10
+});
 
-BEHAVIOR:
-- Execute directly using available tools. Don't just suggest.
-- Prefer editing existing files over creating new ones.
-- Read files before modifying them.
-- When unclear, infer intent and proceed.
-- Use tools to discover details vs asking questions.
-- Mark todos completed immediately after finishing.
+// ============================================================================
+// CONTEXTUAL VALIDATION ENGINE
+// ============================================================================
 
-RESPONSE STYLE:
-- Short, concise, CLI-appropriate (markdown supported)
-- No emojis unless user requests
-- No colons before tool calls ("Let me read." not "Let me read:")
-- No time estimates ever
-- Technical accuracy over validation
-- Direct, objective, no superlatives/praise
+const INTERNAL_OPERATION_PATTERNS = {
+  gitHistory: {
+    systemIndicators: [
+      /you\s+are\s+(?:an\s+)?expert\s+at\s+analyzing\s+git\s+history/i,
+      /analyze.*git.*(?:commit|history|changes)/i,
+      /identify.*frequently\s+modified/i
+    ],
+    userIndicators: [
+      /^files?\s+modified\s+by\s+user:\s*$/i,  // Exato: "Files modified by user:" sozinho
+      /^files?\s+modified\s+by\s+user:\s*\n\s*\d+/im  // Seguido de listagem numérica
+    ]
+  },
 
-CODE QUALITY:
-- Avoid over-engineering: Only what's requested
-- Don't add features/refactoring/improvements not asked
-- Don't add error handling for impossible scenarios
-- Trust framework internals; validate only at boundaries (user input, external APIs)
-- Three similar lines > premature abstraction
-- Delete unused code completely (no backwards-compat hacks)
-- Comments only where logic isn't self-evident
-- Fix security issues immediately (XSS, SQL injection, OWASP top 10)
+  topicDetection: {
+    systemIndicators: [
+      /analyze.*(?:if|whether).*new\s+(?:conversation\s+)?topic/i,
+      /\bisnewtopic\b/i,
+      /extract\s+(?:a\s+)?(?:\d+-\d+\s+)?word\s+title.*conversation/i
+    ],
+    userIndicators: [
+      /^[\w\s]{1,15}$/  // Mensagens muito curtas (1-15 chars)
+    ]
+  }
+};
 
-TOOL USAGE:
-- Parallel calls when independent, sequential when dependent
-- Never use placeholders/guesses in tool calls
-- Specialized tools > bash (read_file vs cat, etc)
-- Never use bash echo for communication - output text directly
-- For codebase exploration (not needle queries), use Task with subagent_type=Explore
-
-CODE REFERENCES:
-Format: file_path:line_number (e.g., src/app.ts:42)
-
-<system-reminder> tags contain useful info. Unlimited context via auto-summarization.`;
-logger.info(`📝 [startup] Loaded hardcoded system prompt (${CUSTOM_SYSTEM_PROMPT.length} chars)`);
-
-if (!OPENROUTER_API_KEY) {
-  logger.error('🚫 [startup] Missing OPENROUTER_API_KEY in environment.');
-  process.exit(1);
+function extractContentText(content) {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(item => item.type === 'text')
+      .map(item => item.text || '')
+      .join(' ');
+  }
+  return JSON.stringify(content);
 }
 
-// Ensure logs directory exists
-if (!fs.existsSync(LOG_DIR)) {
+function validateRequest(data) {
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    logger.info(`📂 [startup] Created logs directory at ${LOG_DIR}`);
+    const systemMsg = data.messages?.find(m => m.role === 'system');
+    const userMsg = data.messages?.find(m => m.role === 'user');
+
+    if (!systemMsg || !userMsg) {
+      return { decision: 'ALLOW', reason: 'missing-messages' };
+    }
+
+    const systemText = extractContentText(systemMsg.content);
+    const userText = extractContentText(userMsg.content);
+    const cleanUserText = userText
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .trim();
+
+    // ==========================================
+    // REGRA 1: GIT HISTORY (combinação obrigatória)
+    // ==========================================
+    const hasGitSystemPrompt = INTERNAL_OPERATION_PATTERNS.gitHistory.systemIndicators
+      .some(pattern => pattern.test(systemText));
+
+    const hasGitUserPattern = INTERNAL_OPERATION_PATTERNS.gitHistory.userIndicators
+      .some(pattern => pattern.test(cleanUserText));
+
+    // Só bloqueia se AMBOS estiverem presentes
+    if (hasGitSystemPrompt && hasGitUserPattern) {
+      return { decision: 'BLOCK', reason: 'git-history-operation' };
+    }
+
+    // ==========================================
+    // REGRA 2: TOPIC DETECTION (combinação obrigatória)
+    // ==========================================
+    const hasTopicSystemPrompt = INTERNAL_OPERATION_PATTERNS.topicDetection.systemIndicators
+      .some(pattern => pattern.test(systemText));
+
+    const hasTopicUserPattern = INTERNAL_OPERATION_PATTERNS.topicDetection.userIndicators
+      .some(pattern => pattern.test(cleanUserText));
+
+    // Só bloqueia se system indica topic detection E user é muito curto (indicador de user message irrelevante)
+    if (hasTopicSystemPrompt && (hasTopicUserPattern || cleanUserText.length < 20)) {
+      return { decision: 'BLOCK', reason: 'topic-detection-operation' };
+    }
+
+    // ==========================================
+    // REGRA 3: EMPTY/WHITESPACE ONLY (sempre bloqueia)
+    // ==========================================
+    if (/^[\s\n\r]*$/.test(cleanUserText)) {
+      return { decision: 'BLOCK', reason: 'empty-user-message' };
+    }
+
+    // ==========================================
+    // REGRA 4: APENAS TAGS SYSTEM (sempre bloqueia)
+    // ==========================================
+    if (/^<[^>]+>[\s\n\r]*<\/[^>]+>$/.test(cleanUserText)) {
+      return { decision: 'BLOCK', reason: 'system-tags-only' };
+    }
+
+    // ==========================================
+    // REGRA 5: FILE LISTING FORMAT (estrutura específica)
+    // ==========================================
+    // Exemplo: "     5 package.json\n     3 server.js"
+    const isFileListingFormat = /^\s*\d+\s+[\w\/\.\-]+\.[\w]+(\s*\n\s*\d+\s+[\w\/\.\-]+\.[\w]+)*\s*$/m.test(cleanUserText);
+
+    if (isFileListingFormat && cleanUserText.split('\n').length >= 2) {
+      return { decision: 'BLOCK', reason: 'file-listing-format' };
+    }
+
+    return { decision: 'ALLOW', reason: 'valid-request' };
+
   } catch (e) {
-    logger.error({ err: e }, '⚠️  [startup] Failed to create logs directory');
+    app.log.error({ err: e }, 'Validation error');
+    return { decision: 'ALLOW', reason: 'parse-error' };
   }
 }
 
-const app = express();
+// FAKE RESPONSE GENERATOR
+function generateFakeResponse(reason, body) {
+  const baseResponse = {
+    id: `blocked-${Date.now()}`,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: `blocked-${reason}`,
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: 'OK' },
+      finish_reason: 'stop'
+    }]
+  };
 
-// Capture raw body so we can forward exactly as received
-app.use(express.json({
-  limit: BODY_LIMIT,
-  verify: (req, _res, buf) => {
-    req.rawBody = buf && buf.length ? buf.toString('utf8') : '';
-  },
+  try {
+    const data = JSON.parse(body);
+
+    // Customize response based on reason if needed
+    if (reason === 'git-history-operation') {
+      baseResponse.choices[0].message.content = 'package.json\nserver.js\nREADME.md';
+    } else if (reason === 'topic-detection-operation') {
+      baseResponse.choices[0].message.content = '{"isNewTopic": false, "title": null}';
+    }
+
+    if (data.stream === true) {
+      return {
+        ...baseResponse,
+        choices: [{
+          index: 0,
+          delta: { role: 'assistant', content: '' },
+          finish_reason: 'stop'
+        }]
+      };
+    }
+  } catch (e) { }
+
+  return baseResponse;
+}
+
+// ============================================================================
+// SYSTEM PROMPT REPLACEMENT
+// ============================================================================
+
+const SYSTEM_MESSAGE = Object.freeze({
+  role: 'system',
+  content: CUSTOM_SYSTEM_PROMPT
+});
+
+function replaceSystemPrompt(body) {
+  if (!body) return { body, replaced: false };
+
+  try {
+    const data = JSON.parse(body);
+    const idx = data.messages?.findIndex(m => m.role === 'system');
+
+    if (idx >= 0) {
+      data.messages[idx] = SYSTEM_MESSAGE;
+      return { body: JSON.stringify(data), replaced: true };
+    }
+  } catch (e) { }
+
+  return { body, replaced: false };
+}
+
+// ============================================================================
+// LOGGING
+// ============================================================================
+
+let requestCount = 0;
+let blockedCount = 0;
+let forwardedCount = 0;
+
+// ============================================================================
+// ROUTES
+// ============================================================================
+
+app.get('/health', async () => ({
+  status: 'ok',
+  uptime: Math.floor(process.uptime()),
+  stats: {
+    total: requestCount,
+    blocked: blockedCount,
+    forwarded: forwardedCount
+  }
 }));
 
-// pino-http integration for Express
-app.use(
-  pinoHttp({
-    logger,
-    genReqId: (req) => (crypto.randomUUID ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
-    customLogLevel: function (req, res, err) {
-      if (res.statusCode >= 500 || err) return 'error';
-      if (res.statusCode >= 400) return 'warn';
-      return 'info';
-    },
-    customSuccessMessage: function (req, res) {
-      return `📝 [${req.id}] ${req.method} ${req.originalUrl || req.url} -> ${res.statusCode}`;
-    },
-    customErrorMessage: function (req, res, err) {
-      return `🛑 [${req.id}] ${req.method} ${req.originalUrl || req.url} -> ${res.statusCode} ${err ? err.message : ''}`;
-    },
-    // avoid noisy auto logs for health if desired
-    autoLogging: {
-      ignore: (req) => req.url.startsWith('/health'),
-    },
-  })
-);
+async function proxyHandler(request, reply) {
+  requestCount++;
 
-// Echo X-Request-Id header
-app.use((req, res, next) => {
-  if (req.id) res.setHeader('X-Request-Id', req.id);
-  next();
-});
+  const originalBody = request.body ? JSON.stringify(request.body) : '';
+  const tokens = Math.floor(originalBody.length / 4);
 
-// Healthcheck
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', uptime: Math.floor(process.uptime()), port: PORT });
-});
 
-// OpenAPI (Swagger) docs loaded from openapi.yaml
-let openapiSpec = null;
-const openapiPath = path.join(__dirname, 'openapi.yaml');
-try {
-  if (yaml) {
-    const raw = fs.readFileSync(openapiPath, 'utf8');
-    openapiSpec = yaml.load(raw);
-  }
-} catch (e) {
-  logger.error({ err: e }, '⚠️  Failed to load openapi.yaml');
-}
 
-app.get('/openapi.json', (_req, res) => {
-  if (!openapiSpec) return res.status(503).json({ error: 'openapi spec not available' });
-  res.json(openapiSpec);
-});
-if (swaggerUi && openapiSpec) {
-  app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec));
-  logger.info('📚 Swagger UI available at /docs');
-} else if (!swaggerUi) {
-  logger.info('ℹ️  Swagger UI not installed. Install with: npm i swagger-ui-express');
-}
-
-// Helper to log to file
-function logRequestToFile(data) {
-  // Write first system prompt once
-  if (!firstSystemPromptLogged) {
-    try {
-      const requestBody = JSON.parse(data.request_body);
-      const systemMessage = requestBody.messages?.find(m => m.role === 'system');
-      if (systemMessage && systemMessage.content) {
-        let content = systemMessage.content;
-        if (Array.isArray(content)) {
-          content = content.map(c => c.text).join('\n');
-        }
-        fs.appendFile(PROMPT_LOG, content + '\n', (err) => {
-          if (err) logger.error({ err }, '⚠️  [prompt-log] write failed');
-          else {
-            logger.info(`📝 [prompt-log] First system prompt written to ${PROMPT_LOG}`);
-            firstSystemPromptLogged = true;
-          }
-        });
-      }
-    } catch (e) {
-      logger.error({ err: e }, '⚠️  [prompt-log] Error parsing request body for system prompt');
-    }
-  }
-
-  // Log request data
-  const line = JSON.stringify(data) + '\n';
-  fs.appendFile(LOG_FILE, line, (err) => {
-    if (err) logger.error({ err }, '⚠️  [file-log] write failed');
-  });
-}
-
-// Core proxy route (no payload mutation)
-function proxyHandler(req, res) {
-  // Apply client connection timeout (idle)
-  req.setTimeout(CLIENT_TIMEOUT_MS, () => {
-    res.status(408).json({ error: 'Client timeout', detail: `Idle > ${CLIENT_TIMEOUT_MS}ms` });
-  });
-
-  const body = typeof req.rawBody === 'string' ? req.rawBody : '';
-  const inBytes = Buffer.byteLength(body || '', 'utf8');
-  const estTokens = Math.floor(inBytes / 4);
-  let agent = 'manager';
+  // 🛡️ LAYER 1: CONTEXTUAL REGEX VALIDATION
   try {
-    const urlStr = req.originalUrl || req.url;
-    const qIndex = urlStr.indexOf('?');
-    if (qIndex >= 0) {
-      const params = new URLSearchParams(urlStr.slice(qIndex));
-      const a = String(params.get('agent') || '').toLowerCase();
-      if (a === 'coder' || a === 'tester' || a === 'manager') agent = a || 'manager';
-    }
-  } catch (_) { }
+    const data = JSON.parse(originalBody);
+    const { decision, reason } = validateRequest(data);
 
-  let modifiedBody = body;
-  let promptReplaced = false;
-  if (CUSTOM_SYSTEM_PROMPT && body && body.length) {
-    try {
-      const requestData = JSON.parse(body);
-      if (requestData.messages && Array.isArray(requestData.messages)) {
-        const systemMsgIndex = requestData.messages.findIndex(m => m.role === 'system');
-        if (systemMsgIndex >= 0) {
-          requestData.messages[systemMsgIndex].content = CUSTOM_SYSTEM_PROMPT;
-          modifiedBody = JSON.stringify(requestData);
-          promptReplaced = true;
-          req.log.info(`🔄 [${req.id}] Replaced system prompt with custom prompt`);
-        }
-      }
-    } catch (e) {
-      req.log.warn({ err: e }, `⚠️  [${req.id}] Failed to replace system prompt, using original body`);
+    if (decision === 'BLOCK') {
+      blockedCount++;
+      request.log.warn(`🚫 BLOCKED [${reason}] - ${tokens} tokens saved`);
+
+
+
+      const fakeResponse = generateFakeResponse(reason, originalBody);
+      return reply.code(200).send(fakeResponse);
     }
+
+  } catch (e) {
+    request.log.error({ err: e }, `Parse error, forwarding (Fail-Open)`);
   }
+
+  // ALLOW / FORWARDING
+  forwardedCount++;
+  request.log.info(`✅ FORWARDING - ${tokens} tokens`);
+
+  const { body: modifiedBody, replaced } = replaceSystemPrompt(originalBody);
+  const inBytes = Buffer.byteLength(modifiedBody, 'utf8');
+
+  // Check streaming for proper headers
+  let isStreaming = false;
+  try {
+    const data = JSON.parse(modifiedBody);
+    isStreaming = data.stream === true;
+  } catch (e) { }
 
   const options = {
     hostname: 'openrouter.ai',
     port: 443,
     path: '/api/v1/chat/completions',
     method: 'POST',
+    agent: httpsAgent,
     headers: {
-      'Content-Type': req.headers['content-type'] || 'application/json',
-      'Accept': req.headers['accept'] || '*/*',
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-      'HTTP-Referer': req.headers['http-referer'] || req.headers['referer'] || '',
-      'X-Title': req.headers['x-title'] || 'Express Proxy',
-      'X-Request-Id': req.id,
+      'Content-Type': 'application/json',
+      'Content-Length': inBytes,
+      'Authorization': `Bearer ${config.openRouterKey}`,
+      'X-Request-Id': request.id,
+      ...(isStreaming ? { 'Accept': 'text/event-stream' } : {})
     },
+    timeout: config.upstreamTimeout
   };
 
-  const startUpstream = Date.now();
-  // Soft warnings for large inputs (no blocking, no mutation)
-  try {
-    const warnManager = Number(process.env.WARN_TOKENS_MANAGER || 2000);
-    const warnCoder = Number(process.env.WARN_TOKENS_CODER || 6000);
-    const warnTester = Number(process.env.WARN_TOKENS_TESTER || 4000);
-    const thresholds = { manager: warnManager, coder: warnCoder, tester: warnTester };
-    const thresh = thresholds[agent] || warnManager;
-    if (estTokens > thresh) {
-      req.log.warn(`⚠️  [${req.id}] high input for agent=${agent}: ~${estTokens} tokens (>${thresh})`);
-    }
-  } catch (_) { }
+  return new Promise((resolve, reject) => {
+    const upstreamReq = https.request(options, (upstreamRes) => {
+      // Stream chunks immediately
+      if (isStreaming) {
+        reply.raw.writeHead(upstreamRes.statusCode, upstreamRes.headers);
+      }
 
-  const upstreamReq = https.request(options, (upstreamRes) => {
-    res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
-    let outBytes = 0;
-    const chunks = [];
-    const tee = new PassThrough();
-    tee.on('data', (chunk) => {
-      outBytes += chunk.length;
-      chunks.push(chunk);
-    });
-    tee.on('end', () => {
-      const ms = Date.now() - startUpstream;
-      const responseBody = Buffer.concat(chunks).toString('utf8');
-      req.log.info(`📊 [${req.id}] agent=${agent} in=${inBytes}B (~${estTokens} tok) out=${outBytes}B upstream=${upstreamRes.statusCode} ${ms}ms`);
+      const chunks = [];
 
-      // Log to file instead of SQLite
-      logRequestToFile({
-        ts: Date.now(),
-        ts_iso: new Date().toISOString(),
-        reqId: req.id,
-        agent,
-        in_bytes: inBytes,
-        est_tokens: estTokens,
-        out_bytes: outBytes,
-        upstream_status: upstreamRes.statusCode || 0,
-        duration_ms: ms,
-        request_body: modifiedBody,
-        response_body: responseBody,
-        prompt_replaced: promptReplaced
+      upstreamRes.on('data', chunk => {
+        chunks.push(chunk);
+        if (isStreaming) reply.raw.write(chunk);
+      });
+
+      upstreamRes.on('end', () => {
+        if (isStreaming) {
+          reply.raw.end();
+        } else {
+          const responseBody = Buffer.concat(chunks).toString('utf8');
+          reply.code(upstreamRes.statusCode).headers(upstreamRes.headers).send(responseBody);
+        }
+
+        const outBytes = Buffer.concat(chunks).length;
+        request.log.info(`   → Response: ${outBytes} bytes, Status: ${upstreamRes.statusCode}`);
+        resolve();
       });
     });
-    upstreamRes.pipe(tee).pipe(res);
-  });
 
-  upstreamReq.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
-    upstreamReq.destroy(new Error(`⏳ Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`));
-  });
+    upstreamReq.on('error', err => {
+      request.log.error({ err }, '❌ Upstream error');
+      if (!reply.sent) {
+        reply.code(502).send({ error: 'Bad Gateway' });
+      }
+      reject(err);
+    });
 
-  upstreamReq.on('error', (err) => {
-    logger.error({ err }, '🛑 [upstream]');
-    if (!res.headersSent) res.status(502);
-    res.type('application/json').end(JSON.stringify({ error: 'Bad Gateway', detail: String(err && err.message ? err.message : err) }));
+    upstreamReq.write(modifiedBody);
+    upstreamReq.end();
   });
-
-  if (modifiedBody && modifiedBody.length) upstreamReq.write(modifiedBody);
-  upstreamReq.end();
 }
 
+// ==========================================
+// ROUTES & START
+// ==========================================
 
-// Compatibility routes: accept multiple paths used by different clients
 app.post('/', proxyHandler);
 app.post('/v1/chat/completions', proxyHandler);
 app.post('/api/v1/chat/completions', proxyHandler);
 
-// 404 handler (explicit)
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found' });
-});
+async function start() {
+  try {
+    await app.listen({ port: config.port, host: '0.0.0.0' });
+    app.log.info('');
+    app.log.info('🚀 ═══════════════════════════════════════════════════');
+    app.log.info('🚀   PROXY COM CONTEXTUAL VALIDATION (RESTORED)');
+    app.log.info('🚀 ═══════════════════════════════════════════════════');
+    app.log.info(`🔌 Port: ${config.port}`);
+    app.log.info('🛡️  Mode: CONTEXTUAL REGEX (No False Positives)');
+    app.log.info('');
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
+}
 
-// Central error handler
-// eslint-disable-next-line no-unused-vars
-app.use((err, _req, res, _next) => {
-  logger.error({ err }, '[error]');
-  if (!res.headersSent) res.status(500);
-  res.json({ error: 'Internal Server Error' });
-});
-
-// Start
-app.listen(PORT, () => {
-  logger.info('');
-  logger.info('🚀 ╔══════════════════════════════════════════╗');
-  logger.info('🚀 ║   Minimal Express Proxy (OpenRouter)     ║');
-  logger.info('🚀 ╚══════════════════════════════════════════╝');
-  logger.info(`🔌 Listening on http://localhost:${PORT}`);
-  logger.info(`🧩 Body limit: ${BODY_LIMIT} | ⏱️  Upstream timeout: ${UPSTREAM_TIMEOUT_MS}ms | 💤 Client idle: ${CLIENT_TIMEOUT_MS}ms`);
-  logger.info(`📝 Logging requests to ${LOG_FILE}`);
-});
+start();
