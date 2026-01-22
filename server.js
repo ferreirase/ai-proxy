@@ -2,8 +2,8 @@ require('dotenv').config();
 const fastify = require('fastify');
 const https = require('https');
 
-const config = require('./config');
-const CUSTOM_SYSTEM_PROMPT = require('./system-prompt');
+const config = require('./config.js');
+const CUSTOM_SYSTEM_PROMPT = require('./system-prompt.js');
 
 const app = fastify({
   logger: { level: config.logLevel }
